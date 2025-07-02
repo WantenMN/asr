@@ -5,7 +5,7 @@ To start the server:
 ```sh
 cd server
 nix-shell
-python paraformer.py
+uv run src/paraformer.py
 ```
 
 ## Client
