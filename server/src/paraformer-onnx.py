@@ -5,7 +5,7 @@ import uvicorn
 import zhconv
 import os
 
-model_id = "/home/wanten/repos/speech-recognition/models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-onnx"
+model_id = "models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-onnx"
 
 model = Paraformer(model_dir=model_id, batch_size=1, quantize=True)
 
@@ -22,7 +22,6 @@ async def transcribe(file: UploadFile = File(...)):
             f.write(audio_data)
 
         result = model(temp_file_path)
-        print(result)
         text = result[0]["preds"][0]
         os.remove(temp_file_path)
 
