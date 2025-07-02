@@ -17,14 +17,14 @@ The following are the available model runners.
 
 ```
 # Recommended: Fastest
-python src/paraformer.py
+uv run src/paraformer.py
 
 # Paraformer ONNX version
-python src/paraformer-onnx.py
+uv run src/paraformer-onnx.py
 
 # Faster-Whisper implementation
-python src/faster-whisper.py
+uv run src/faster-whisper.py
 
 # Whisper official implementation
-python src/whisper.py
+uv run src/whisper.py
 ```
