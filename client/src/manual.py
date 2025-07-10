@@ -119,13 +119,28 @@ class AudioRecorder:
             self.is_sending = False
 
     def _copy_to_clipboard_and_paste(self, text: str) -> None:
+        original = None
         try:
-            original = pyperclip.paste()
+            try:
+                original = pyperclip.paste()
+            except Exception:
+                # Clipboard is empty or inaccessible - we'll proceed anyway
+                pass
+
             pyperclip.copy(text)
             keyboard.send("ctrl+shift+v")
-            pyperclip.copy(original)
+            time.sleep(0.1)  # Small delay to ensure paste completes
+
+            if original is not None:
+                pyperclip.copy(original)
+
         except Exception as e:
             print(f"Clipboard error: {e}")
+            if original is not None:
+                try:
+                    pyperclip.copy(original)
+                except Exception:
+                    pass
 
     def _cleanup(self) -> None:
         try:
