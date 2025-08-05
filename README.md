@@ -1,19 +1,15 @@
 ## Server
 
-To start the server:
-
 ```sh
 cd server
-nix-shell
-uv run src/paraformer.py
+uv sync
+uv run src
 ```
 
 ## Client
 
-To start the client:
-
 ```sh
 cd client
-nix-shell
-sudo -E python manual.py
+uv sync
+sudo -E uv run src/manual.py
 ```
