@@ -1,194 +1,139 @@
 import os
 import time
-import wave
 import threading
-import pyaudio
-import keyboard
 import requests
 import pyperclip
-
+import keyboard
+import sounddevice as sd
+import numpy as np
+from scipy.io.wavfile import write
 from dataclasses import dataclass
-from typing import Optional
-
 
 @dataclass
 class RecordingConfig:
     output_file: str = "output.wav"
     min_duration: float = 0.3
-    format: int = pyaudio.paInt16
+    rate: int = 48000          # 保持原参数
     channels: int = 1
-    rate: int = 48000
     chunk: int = 1024
     device_name: str = "USB Condenser Microphone"
     server_url: str = "http://localhost:8000/transcribe/"
 
-
 class AudioRecorder:
     def __init__(self, config: RecordingConfig):
         self.config = config
-        self.audio = pyaudio.PyAudio()
-        self.stream = None
-        self.frames = []
-        self.lock = threading.Lock()
         self.is_recording = False
         self.is_sending = False
+        self.frames = []
         self.start_time = 0
+        self.lock = threading.Lock()
         self.device_index = self._find_device_index()
 
-    def _find_device_index(self) -> int:
-        for i in range(self.audio.get_device_count()):
-            dev_info = self.audio.get_device_info_by_index(i)
-            if self.config.device_name in dev_info["name"]:
+    def _find_device_index(self):
+        devices = sd.query_devices()
+        for i, dev in enumerate(devices):
+            if self.config.device_name in dev['name']:
                 return i
-        raise ValueError(f"Device '{self.config.device_name}' not found")
+        print(f"警告：未找到指定设备 '{self.config.device_name}'，将使用默认输入设备")
+        return None
 
-    def start_recording(self) -> None:
+    def start_recording(self):
         with self.lock:
             if self.is_recording or self.is_sending:
                 return
-            try:
-                self.stream = self.audio.open(
-                    format=self.config.format,
-                    channels=self.config.channels,
-                    rate=self.config.rate,
-                    input=True,
-                    frames_per_buffer=self.config.chunk,
-                    input_device_index=self.device_index,
-                )
-                self.frames.clear()
-                self.is_recording = True
-                self.start_time = time.time()
-                print(f"Recording started with {self.config.device_name}...")
-            except Exception as e:
-                print(f"Failed to start recording: {e}")
-                self.is_recording = False
+            self.frames.clear()
+            self.is_recording = True
+            self.start_time = time.time()
+            print("录音开始...")
 
-    def stop_recording(self) -> None:
+    def stop_recording(self):
         with self.lock:
-            if not self.is_recording or not self.stream:
+            if not self.is_recording:
                 return
-            try:
-                self.stream.stop_stream()
-                self.stream.close()
-                self.stream = None
-                self.is_recording = False
+            self.is_recording = False
+            duration = time.time() - self.start_time
+            print(f"录音结束，时长：{duration:.2f}s")
 
-                duration = time.time() - self.start_time
-                print(f"Recording stopped. Duration: {duration:.2f}s")
-
-                if duration >= self.config.min_duration:
-                    self._save_audio()
-                    self._send_audio()
-                else:
-                    print(
-                        f"Recording too short (<{self.config.min_duration}s). Discarded."
-                    )
-                    self._cleanup()
-            except Exception as e:
-                print(f"Error stopping recording: {e}")
+            if duration >= self.config.min_duration and self.frames:
+                self._save_audio()
+                threading.Thread(target=self._send_audio, daemon=True).start()
+            else:
+                print(f"录音太短 (< {self.config.min_duration}s)，已丢弃。")
                 self._cleanup()
 
-    def _save_audio(self) -> None:
-        try:
-            with wave.open(self.config.output_file, "wb") as wf:
-                wf.setnchannels(self.config.channels)
-                wf.setsampwidth(self.audio.get_sample_size(self.config.format))
-                wf.setframerate(self.config.rate)
-                wf.writeframes(b"".join(self.frames))
-        except Exception as e:
-            print(f"Failed to save audio: {e}")
+    def _record_callback(self, indata, frames, time_, status):
+        if status:
+            print(status)
+        if self.is_recording:
+            self.frames.append(indata.copy())
 
-    def _send_audio(self) -> None:
+    def _save_audio(self):
+        try:
+            audio_data = np.concatenate(self.frames, axis=0)
+            write(self.config.output_file, self.config.rate, audio_data)
+            print(f"音频已保存为 {self.config.output_file}")
+        except Exception as e:
+            print(f"保存音频失败：{e}")
+
+    def _send_audio(self):
         self.is_sending = True
         try:
             with open(self.config.output_file, "rb") as f:
-                response = requests.post(
-                    self.config.server_url, files={"file": f}
-                )
+                response = requests.post(self.config.server_url, files={"file": f})
                 response.raise_for_status()
-
-            text = response.json().get("text", "No text returned")
-            print(f"Transcription: {text}\n")
+            text = response.json().get("text", "未返回文字")
+            print(f"识别结果：{text}")
             self._copy_to_clipboard_and_paste(text)
-        except requests.RequestException as e:
-            print(f"Request failed: {e}")
         except Exception as e:
-            print(f"Unexpected error: {e}")
+            print(f"发送失败：{e}")
         finally:
             self._cleanup()
             self.is_sending = False
 
-    def _copy_to_clipboard_and_paste(self, text: str) -> None:
+    def _copy_to_clipboard_and_paste(self, text):
         original = None
         try:
             try:
                 original = pyperclip.paste()
-            except Exception:
-                # Clipboard is empty or inaccessible - we'll proceed anyway
+            except:
                 pass
-
             pyperclip.copy(text)
             keyboard.send("ctrl+shift+v")
-            time.sleep(0.1)  # Small delay to ensure paste completes
-
-            if original is not None:
+            time.sleep(0.1)
+            if original:
                 pyperclip.copy(original)
-
         except Exception as e:
-            print(f"Clipboard error: {e}")
-            if original is not None:
-                try:
-                    pyperclip.copy(original)
-                except Exception:
-                    pass
+            print(f"剪贴板操作失败：{e}")
 
-    def _cleanup(self) -> None:
+    def _cleanup(self):
         try:
             if os.path.exists(self.config.output_file):
                 os.remove(self.config.output_file)
         except Exception as e:
-            print(f"Failed to clean up output file: {e}")
+            print(f"清理文件失败：{e}")
 
-    def _record_loop(self):
-        while True:
-            with self.lock:
-                if self.is_recording and self.stream:
-                    try:
-                        data = self.stream.read(
-                            self.config.chunk, exception_on_overflow=False
-                        )
-                        self.frames.append(data)
-                    except Exception as e:
-                        print(f"Stream read error: {e}")
-                        self.stop_recording()
-            time.sleep(0.01)
-
-    def run(self) -> None:
-        print(
-            "Press and hold Num Lock to record, release to stop. Ctrl+Shift+Esc to exit."
-        )
-
+    def run(self):
+        print("按住 Num Lock 开始录音，松开停止录音。按 Ctrl+C 退出。")
         keyboard.on_press_key("num lock", lambda _: self.start_recording())
         keyboard.on_release_key("num lock", lambda _: self.stop_recording())
 
         try:
-            self._record_loop()
+            with sd.InputStream(samplerate=self.config.rate,
+                                channels=self.config.channels,
+                                device=self.device_index,
+                                blocksize=self.config.chunk,
+                                callback=self._record_callback):
+                while True:
+                    time.sleep(0.01)
         except KeyboardInterrupt:
-            print("\nExiting...")
+            print("\n退出程序...")
             self.stop_recording()
         finally:
             self._cleanup()
-            if self.stream:
-                self.stream.stop_stream()
-                self.stream.close()
-            self.audio.terminate()
-            keyboard.unhook_all()
-
 
 def main():
     config = RecordingConfig()
     AudioRecorder(config).run()
-
 
 if __name__ == "__main__":
     main()
